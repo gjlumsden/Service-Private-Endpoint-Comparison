@@ -11,7 +11,7 @@ param workspaceId string
 param sqlAdminPassword string
 param sqlAdminUsername string = 'sqluser'
 
-var vmName = [for index in range(0, 2): 'vm${index}${index == 0 ? '-svc-ep' : 'non-svc-ep'}']
+var vmName = [for index in range(0, 2): 'vm${index}${index == 0 ? '-svc-ep' : '-non-svc-ep'}']
 var firewallName = 'defw-${uniqueString(resourceGroup().name)}'
 var firewallPipName = 'defw-pip-${uniqueString(resourceGroup().name)}'
 var firewallPolicyName = 'defwp-${uniqueString(resourceGroup().name)}'
