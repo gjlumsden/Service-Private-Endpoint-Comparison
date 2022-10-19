@@ -24,7 +24,7 @@ var nonSeSubnetAddressPrefix = '172.16.1.0/24'
 var nonSeSubnetName = 'non-svc-endpoint-subnet'
 
 var peSubnetAddressPrefix = '172.16.2.0/24'
-var peSubnetName = 'non-svc-endpoint-subnet'
+var peSubnetName = 'pvt-endpoint-subnet'
 
 var bastionSubnetAddressPrefix = '172.16.3.0/24'
 var bastionSubnetName = 'AzureBastionSubnet'
@@ -46,7 +46,7 @@ var privateEndpointName = '${peSqlServerName}-pvtep'
 var dnsZoneName = 'privatelink${environment().suffixes.sqlServerHostname}'
 var dnsZoneGroupName = '${privateEndpointName}/group'
 
-
+//dependsOn is used here to ensure the subnets don't deploy in parallel.
 resource seSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
   parent: virtualNetwork
   name: seSubnetName
@@ -64,6 +64,9 @@ resource seSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
       id: routeTable.id
     }
   }
+  dependsOn: [
+    firewallSubnet
+  ]
 }
 
 resource nonSeSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
@@ -78,6 +81,9 @@ resource nonSeSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
       id: routeTable.id
     }
   }
+  dependsOn: [
+    seSubnet
+  ]
 }
 
 resource bstnSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
@@ -89,6 +95,9 @@ resource bstnSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
       //None!
     ]
   }
+  dependsOn: [
+    nonSeSubnet
+  ]
 }
 
 resource firewallSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
@@ -111,9 +120,11 @@ resource peSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
       //None!
     ]
   }
+  dependsOn: [
+    firewallSubnet
+  ]
 }
 
-//vnet
 resource virtualNetwork 'Microsoft.Network/virtualNetworks@2019-11-01' = {
   name: 'svc-pvt-endpoint-vnet'
   location: location
@@ -135,7 +146,7 @@ resource nics 'Microsoft.Network/networkInterfaces@2022-05-01' = [for index in r
         name: 'ipconfig1'
         properties: {
           subnet: {
-            id: resourceId('Microsoft.Network/virtualNetworks/subnets', 'svc-pvt-endpoint-vnet', index == 0 ? 'svc-endpoint-subnet' : 'non-svc-endpoint-subnet')
+            id: index == 0 ? seSubnet.id : nonSeSubnet.id
           }
         }
       }
@@ -171,6 +182,9 @@ resource vms 'Microsoft.Compute/virtualMachines@2020-12-01' = [for index in rang
         name: 'vm${index}-osdisk'
         caching: 'ReadWrite'
         createOption: 'FromImage'
+        managedDisk: {
+          storageAccountType: 'StandardSSD_LRS'
+        }
       }
     }
     networkProfile: {
@@ -187,6 +201,124 @@ resource vms 'Microsoft.Compute/virtualMachines@2020-12-01' = [for index in rang
     }
   }
 }]
+
+resource policyApplicationRuleGroup 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2022-05-01' = {
+  parent: firewallPolicy
+  name: 'ApplicationRuleCollectionGroup'
+  properties: {
+    priority: 300
+    ruleCollections: [
+      {
+        ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
+        action: {
+          type: 'Allow'
+        }
+        name: 'AzureMonitorRuleCollection'
+        priority: 300
+        rules: [
+          {
+            ruleType: 'ApplicationRule'
+            name: 'Allow-Trusted-SQL-Rules'
+            protocols: [
+              {
+                protocolType: 'mssql'
+                port: 1433
+              }
+            ]
+            fqdnTags: []
+            webCategories: []
+            targetFqdns: [
+              seSqlServer.properties.fullyQualifiedDomainName
+              peSqlServer.properties.fullyQualifiedDomainName
+            ]
+            targetUrls: []
+            terminateTLS: false
+            sourceAddresses: [
+              peSubnetAddressPrefix
+              seSubnetAddressPrefix
+            ]
+          }
+          {
+            ruleType: 'ApplicationRule'
+            name: 'Allow-Microsoft'
+            protocols: [
+              {
+                protocolType: 'Https'
+                port: 443
+              }
+              {
+                protocolType: 'Http'
+                port: 80
+              }
+            ]
+            fqdnTags: []
+            webCategories: []
+            targetFqdns: [
+              '*.microsoft.com'
+              '*.microsoftonline.com'
+              '*.azure.com'
+              '*.azure.net'
+              '*.azureedge.net'
+              '*.microsoft'
+              '*.windows.net'
+              '*.azure-dns.net'
+            ]
+            targetUrls: []
+            terminateTLS: false
+            sourceAddresses: [
+              peSubnetAddressPrefix
+              seSubnetAddressPrefix
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
+
+resource policyNetworkRuleGroup 'Microsoft.Network/firewallPolicies/ruleCollectionGroups@2020-11-01' = {
+  parent: firewallPolicy
+  name: 'NetworkRuleCollectionGroup'
+  dependsOn: [
+    policyApplicationRuleGroup
+  ]
+  properties: {
+    priority: 200
+    ruleCollections: [
+      {
+        ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
+        name: 'DNS'
+        action: {
+          type: 'Allow'
+        }
+        priority: 210
+        rules: [
+          {
+            ruleType: 'NetworkRule'
+            sourceAddresses: [
+              nonSeSubnetAddressPrefix
+              seSubnetAddressPrefix
+            ]
+            destinationAddresses: [
+              '*'
+            ]
+            destinationPorts: [
+              '53'
+            ]
+            ipProtocols: [
+              'TCP'
+              'UDP'
+            ]
+            name: 'DNS'
+            destinationIpGroups: []
+            destinationFqdns: []
+            sourceIpGroups: []
+          }
+        ]
+      }
+    ]
+  }
+}
 
 resource firewallPolicy 'Microsoft.Network/firewallPolicies@2020-11-01' = {
   name: firewallPolicyName
@@ -213,11 +345,6 @@ resource fwPublicIp 'Microsoft.Network/publicIPAddresses@2020-11-01' = {
     name: 'Standard'
     tier: 'Regional'
   }
-  zones: [
-    '1'
-    '2'
-    '3'
-  ]
   properties: {
     publicIPAllocationMethod: 'Static'
     ipTags: []
@@ -298,7 +425,9 @@ resource bastion 'Microsoft.Network/bastionHosts@2022-05-01' = {
           subnet: {
             id: bstnSubnet.id
           }
-          publicIPAddress: bstnPip
+          publicIPAddress: {
+            id: bstnPip.id
+          }
         }
       }
     ]
