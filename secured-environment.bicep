@@ -46,6 +46,185 @@ var privateEndpointName = '${peSqlServerName}-pvtep'
 var dnsZoneName = 'privatelink${environment().suffixes.sqlServerHostname}'
 var dnsZoneGroupName = '${privateEndpointName}/group'
 
+resource defaultNsg 'Microsoft.Network/networkSecurityGroups@2022-05-01' = {
+  name: 'default-nsg'
+  location: location
+  properties: {
+    securityRules: [
+      {
+        name: 'AllowBastionInbound'
+        properties: {
+          priority: 100
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: '*'
+          sourceAddressPrefix: bastionSubnetAddressPrefix
+          sourcePortRange: 'Tcp'
+          destinationPortRanges: [
+            '22'
+            '3389'
+          ]
+          destinationAddressPrefixes: [
+            seSubnetAddressPrefix
+            nonSeSubnetAddressPrefix
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource bastionNsg 'Microsoft.Network/networkSecurityGroups@2020-11-01' = {
+  name: 'bastion-nsg'
+  location: location
+  properties: {
+    securityRules: [
+      {
+        name: 'AllowHttpsInBound'
+        properties: {
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          sourceAddressPrefix: 'Internet'
+          destinationPortRange: '443'
+          destinationAddressPrefix: '*'
+          access: 'Allow'
+          priority: 100
+          direction: 'Inbound'
+        }
+      }
+      {
+        name: 'AllowGatewayManagerInBound'
+        properties: {
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          sourceAddressPrefix: 'GatewayManager'
+          destinationPortRange: '443'
+          destinationAddressPrefix: '*'
+          access: 'Allow'
+          priority: 110
+          direction: 'Inbound'
+        }
+      }
+      {
+        name: 'AllowLoadBalancerInBound'
+        properties: {
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          sourceAddressPrefix: 'AzureLoadBalancer'
+          destinationPortRange: '443'
+          destinationAddressPrefix: '*'
+          access: 'Allow'
+          priority: 120
+          direction: 'Inbound'
+        }
+      }
+      {
+        name: 'AllowBastionHostCommunicationInBound'
+        properties: {
+          protocol: '*'
+          sourcePortRange: '*'
+          sourceAddressPrefix: 'VirtualNetwork'
+          destinationPortRanges: [
+            '8080'
+            '5701'
+          ]
+          destinationAddressPrefix: 'VirtualNetwork'
+          access: 'Allow'
+          priority: 130
+          direction: 'Inbound'
+        }
+      }
+      {
+        name: 'DenyAllInBound'
+        properties: {
+          protocol: '*'
+          sourcePortRange: '*'
+          sourceAddressPrefix: '*'
+          destinationPortRange: '*'
+          destinationAddressPrefix: '*'
+          access: 'Deny'
+          priority: 1000
+          direction: 'Inbound'
+        }
+      }
+      {
+        name: 'AllowSshRdpOutBound'
+        properties: {
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          sourceAddressPrefix: '*'
+          destinationPortRanges: [
+            '22'
+            '3389'
+          ]
+          destinationAddressPrefix: 'VirtualNetwork'
+          access: 'Allow'
+          priority: 100
+          direction: 'Outbound'
+        }
+      }
+      {
+        name: 'AllowAzureCloudCommunicationOutBound'
+        properties: {
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          sourceAddressPrefix: '*'
+          destinationPortRange: '443'
+          destinationAddressPrefix: 'AzureCloud'
+          access: 'Allow'
+          priority: 110
+          direction: 'Outbound'
+        }
+      }
+      {
+        name: 'AllowBastionHostCommunicationOutBound'
+        properties: {
+          protocol: '*'
+          sourcePortRange: '*'
+          sourceAddressPrefix: 'VirtualNetwork'
+          destinationPortRanges: [
+            '8080'
+            '5701'
+          ]
+          destinationAddressPrefix: 'VirtualNetwork'
+          access: 'Allow'
+          priority: 120
+          direction: 'Outbound'
+        }
+      }
+      {
+        name: 'AllowGetSessionInformationOutBound'
+        properties: {
+          protocol: '*'
+          sourcePortRange: '*'
+          sourceAddressPrefix: '*'
+          destinationAddressPrefix: 'Internet'
+          destinationPortRanges: [
+            '80'
+            '443'
+          ]
+          access: 'Allow'
+          priority: 130
+          direction: 'Outbound'
+        }
+      }
+      {
+        name: 'DenyAllOutBound'
+        properties: {
+          protocol: '*'
+          sourcePortRange: '*'
+          destinationPortRange: '*'
+          sourceAddressPrefix: '*'
+          destinationAddressPrefix: '*'
+          access: 'Deny'
+          priority: 1000
+          direction: 'Outbound'
+        }
+      }
+    ]
+  }
+}
+
 //dependsOn is used here to ensure the subnets don't deploy in parallel.
 resource seSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
   parent: virtualNetwork
@@ -62,6 +241,9 @@ resource seSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
     ]
     routeTable: {
       id: routeTable.id
+    }
+    networkSecurityGroup: {
+      id: defaultNsg.id
     }
   }
   dependsOn: [
@@ -80,6 +262,9 @@ resource nonSeSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
     routeTable: {
       id: routeTable.id
     }
+    networkSecurityGroup: {
+      id: defaultNsg.id
+    }
   }
   dependsOn: [
     seSubnet
@@ -94,6 +279,9 @@ resource bstnSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
     serviceEndpoints: [
       //None!
     ]
+    networkSecurityGroup: {
+      id: bastionNsg.id
+    }
   }
   dependsOn: [
     nonSeSubnet
@@ -119,6 +307,9 @@ resource peSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
     serviceEndpoints: [
       //None!
     ]
+    networkSecurityGroup: {
+      id: defaultNsg.id
+    }
   }
   dependsOn: [
     firewallSubnet
