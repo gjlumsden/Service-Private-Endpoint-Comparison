@@ -7,9 +7,8 @@ param vmPassword string
 param firewallTier string = 'Standard'
 param workspaceId string
 
-@secure()
-param sqlAdminPassword string
-param sqlAdminUsername string = 'sqluser'
+@description('This is a temporary hack to prevent deployment errors on redeployment.')
+param redeploy bool = true
 
 var vmName = [for index in range(0, 2): 'vm${index}${index == 0 ? '-svc-ep' : '-non-svc-ep'}']
 var firewallName = 'defw-${uniqueString(resourceGroup().name)}'
@@ -36,14 +35,12 @@ var routeTableName = 'rt-${uniqueString(resourceGroup().name)}'
 var bastionName = 'bstn-${uniqueString(resourceGroup().name)}'
 var bastionPipName = 'bstn-pip-${uniqueString(resourceGroup().name)}'
 
-var seSqlServerName = 'se-sql-${uniqueString(resourceGroup().name)}'
-var seSqlDbName = 'se-db'
+var seStorageName = 'sestg${uniqueString(resourceGroup().name)}'
 
-var peSqlServerName = 'pe-sql-${uniqueString(resourceGroup().name)}'
-var peSqlDbName = 'pe-db'
+var peStorageName = 'pestg${uniqueString(resourceGroup().name)}'
 
-var privateEndpointName = '${peSqlServerName}-pvtep'
-var dnsZoneName = 'privatelink${environment().suffixes.sqlServerHostname}'
+var privateEndpointName = '${peStorageName}-pvtep'
+var dnsZoneName = 'privatelink.blob.${environment().suffixes.storage}'
 var dnsZoneGroupName = '${privateEndpointName}/group'
 
 resource defaultNsg 'Microsoft.Network/networkSecurityGroups@2022-05-01' = {
@@ -57,9 +54,9 @@ resource defaultNsg 'Microsoft.Network/networkSecurityGroups@2022-05-01' = {
           priority: 100
           direction: 'Inbound'
           access: 'Allow'
-          protocol: '*'
+          protocol: 'Tcp'
           sourceAddressPrefix: bastionSubnetAddressPrefix
-          sourcePortRange: 'Tcp'
+          sourcePortRange: '*'
           destinationPortRanges: [
             '22'
             '3389'
@@ -233,7 +230,7 @@ resource seSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
     addressPrefix: seSubnetAddressPrefix
     serviceEndpoints: [
       {
-        service: 'Microsoft.Sql'
+        service: 'Microsoft.Storage'
         locations: [
           location
         ]
@@ -316,7 +313,7 @@ resource peSubnet 'Microsoft.Network/virtualNetworks/subnets@2022-05-01' = {
   ]
 }
 
-resource virtualNetwork 'Microsoft.Network/virtualNetworks@2019-11-01' = {
+resource virtualNetwork 'Microsoft.Network/virtualNetworks@2019-11-01' = if (!redeploy) {
   name: 'svc-pvt-endpoint-vnet'
   location: location
   properties: {
@@ -397,35 +394,35 @@ resource policyApplicationRuleGroup 'Microsoft.Network/firewallPolicies/ruleColl
   parent: firewallPolicy
   name: 'ApplicationRuleCollectionGroup'
   properties: {
-    priority: 300
+    priority: 100
     ruleCollections: [
       {
         ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
         action: {
           type: 'Allow'
         }
-        name: 'AzureMonitorRuleCollection'
-        priority: 300
+        name: 'RuleCollection'
+        priority: 200
         rules: [
           {
             ruleType: 'ApplicationRule'
-            name: 'Allow-Trusted-SQL-Rules'
+            name: 'Allow-Trusted-Storage-Accounts-Rules'
             protocols: [
               {
-                protocolType: 'mssql'
-                port: 1433
+                protocolType: 'Https'
+                port: 433
               }
             ]
             fqdnTags: []
             webCategories: []
             targetFqdns: [
-              seSqlServer.properties.fullyQualifiedDomainName
-              peSqlServer.properties.fullyQualifiedDomainName
+              replace(replace(peStorage.properties.primaryEndpoints.blob, 'https://', ''), '/', '')
+              replace(replace(seStorage.properties.primaryEndpoints.blob, 'https://', ''), '/', '')
             ]
             targetUrls: []
             terminateTLS: false
             sourceAddresses: [
-              peSubnetAddressPrefix
+              nonSeSubnetAddressPrefix
               seSubnetAddressPrefix
             ]
           }
@@ -451,13 +448,34 @@ resource policyApplicationRuleGroup 'Microsoft.Network/firewallPolicies/ruleColl
               '*.azure.net'
               '*.azureedge.net'
               '*.microsoft'
-              '*.windows.net'
               '*.azure-dns.net'
+              '*.azurewebsites.net'
             ]
             targetUrls: []
             terminateTLS: false
             sourceAddresses: [
-              peSubnetAddressPrefix
+              nonSeSubnetAddressPrefix
+              seSubnetAddressPrefix
+            ]
+          }
+          {
+            ruleType: 'ApplicationRule'
+            name: 'Allow-Win-Update-Diagnostics'
+            protocols: [
+              {
+                protocolType: 'Https'
+                port: 443
+              }
+            ]
+            webCategories: []
+            fqdnTags: [
+              'WindowsUpdate'
+              'WindowsDiagnostics'
+            ]
+            targetUrls: []
+            terminateTLS: false
+            sourceAddresses: [
+              nonSeSubnetAddressPrefix
               seSubnetAddressPrefix
             ]
           }
@@ -474,7 +492,7 @@ resource policyNetworkRuleGroup 'Microsoft.Network/firewallPolicies/ruleCollecti
     policyApplicationRuleGroup
   ]
   properties: {
-    priority: 200
+    priority: 300
     ruleCollections: [
       {
         ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
@@ -482,7 +500,7 @@ resource policyNetworkRuleGroup 'Microsoft.Network/firewallPolicies/ruleCollecti
         action: {
           type: 'Allow'
         }
-        priority: 210
+        priority: 310
         rules: [
           {
             ruleType: 'NetworkRule'
@@ -501,6 +519,29 @@ resource policyNetworkRuleGroup 'Microsoft.Network/firewallPolicies/ruleCollecti
               'UDP'
             ]
             name: 'DNS'
+            destinationIpGroups: []
+            destinationFqdns: []
+            sourceIpGroups: []
+          }
+          {
+            ruleType: 'NetworkRule'
+            sourceAddresses: [
+              nonSeSubnetAddressPrefix
+              seSubnetAddressPrefix
+            ]
+            destinationAddresses: [
+              '40.83.235.53/32'
+              '20.118.99.224/32'
+              '23.102.135.246/32'
+            ]
+            destinationPorts: [
+              '1688'
+            ]
+            ipProtocols: [
+              'TCP'
+              'UDP'
+            ]
+            name: 'Windows-Activation'
             destinationIpGroups: []
             destinationFqdns: []
             sourceIpGroups: []
@@ -570,13 +611,35 @@ resource firewall 'Microsoft.Network/azureFirewalls@2022-05-01' = {
   }
 }
 
+resource firewallDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'log-analytics'
+  scope: firewall
+  properties: {
+    storageAccountId: null
+    eventHubAuthorizationRuleId: null
+    eventHubName: null
+    workspaceId: workspaceId
+    logs: [
+      {
+        category: null
+        categoryGroup: 'allLogs'
+        enabled: true
+        retentionPolicy: {
+          days: 0
+          enabled: false
+        }
+      }
+    ]
+  }
+}
+
 resource routeTable 'Microsoft.Network/routeTables@2019-11-01' = {
   name: routeTableName
   location: location
   properties: {
     routes: [
       {
-        name: 'name'
+        name: 'route-to-firewall'
         properties: {
           addressPrefix: '0.0.0.0/0'
           nextHopType: 'VirtualAppliance'
@@ -625,55 +688,37 @@ resource bastion 'Microsoft.Network/bastionHosts@2022-05-01' = {
   }
 }
 
-resource seSqlServer 'Microsoft.Sql/servers@2021-11-01' = {
-  name: seSqlServerName
+resource seStorage 'Microsoft.Storage/storageAccounts@2022-05-01' = {
+  name: seStorageName
   location: location
-  properties: {
-    administratorLogin: sqlAdminUsername
-    administratorLoginPassword: sqlAdminPassword
-  }
-}
-
-resource seSqlServerVnetRule 'Microsoft.Sql/servers/virtualNetworkRules@2021-11-01' = {
-  parent: seSqlServer
-  name: 'allow-se-subnet'
-  properties: {
-    virtualNetworkSubnetId: seSubnet.id
-  }
-}
-
-resource seDatabase 'Microsoft.Sql/servers/databases@2021-11-01' = {
-  parent: seSqlServer
-  name: seSqlDbName
-  location: location
-  properties: {
-    sampleName: 'AdventureWorksLT'
-  }
   sku: {
-    name: 'Standard'
-    tier: 'Standard'
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    supportsHttpsTrafficOnly: true
+    networkAcls: {
+      defaultAction: 'Deny'
+      virtualNetworkRules: [
+        {
+          id: seSubnet.id
+          action: 'Allow'
+        }
+      ]
+    }
   }
 }
 
-resource peSqlServer 'Microsoft.Sql/servers@2021-11-01' = {
-  name: peSqlServerName
+resource peStorage 'Microsoft.Storage/storageAccounts@2022-05-01' = {
+  name: peStorageName
   location: location
-  properties: {
-    administratorLogin: sqlAdminUsername
-    administratorLoginPassword: sqlAdminPassword
-  }
-}
-
-resource peDatabase 'Microsoft.Sql/servers/databases@2021-11-01' = {
-  parent: peSqlServer
-  name: peSqlDbName
-  location: location
-  properties: {
-    sampleName: 'AdventureWorksLT'
-  }
   sku: {
-    name: 'Standard'
-    tier: 'Standard'
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    supportsHttpsTrafficOnly: true
+    publicNetworkAccess: 'Disabled'
   }
 }
 
@@ -688,9 +733,9 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2021-05-01' = {
       {
         name: privateEndpointName
         properties: {
-          privateLinkServiceId: peSqlServer.id
+          privateLinkServiceId: peStorage.id
           groupIds: [
-            'sqlServer'
+            'blob'
           ]
         }
       }
@@ -732,3 +777,6 @@ resource pvtEndpointDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneG
     privateEndpoint
   ]
 }
+
+output peStgFqdn string = peStorage.properties.primaryEndpoints.blob
+output seStgFqdn string = seStorage.properties.primaryEndpoints.blob

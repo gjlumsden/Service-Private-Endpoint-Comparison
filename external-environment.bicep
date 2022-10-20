@@ -1,25 +1,11 @@
 param location string = resourceGroup().location
-@secure()
-param adminPassword string
-param adminUsername string = 'sqluser'
-var sqlServerName = 'sqlsrv${uniqueString(resourceGroup().id)}${location}'
-var dbName = 'badActorDb'
+var storageaccountname = 'badactor${uniqueString(resourceGroup().id)}'
 
-resource sqlServer 'Microsoft.Sql/servers@2021-11-01' = {
-  name: sqlServerName
+resource storageaccount 'Microsoft.Storage/storageAccounts@2021-02-01' = {
+  name: storageaccountname
   location: location
-  properties: {
-    administratorLogin: adminUsername
-    administratorLoginPassword: adminPassword
-  }
-}
-
-resource sqlServerDatabase 'Microsoft.Sql/servers/databases@2021-11-01' = {
-  parent: sqlServer
-  name: dbName
-  location: location
+  kind: 'StorageV2'
   sku: {
-    name: 'Standard'
-    tier: 'Standard'
+    name: 'Standard_LRS'
   }
 }
