@@ -2,18 +2,19 @@ param location string = resourceGroup().location
 param vmUsername string = 'vmuser'
 @secure()
 param vmPassword string
+param workspaceId string
+@description('This should be the storage blob FQDN in the external environment (e.g., mystg.blob.core.windows.net). An explicit block rule will be added to the firewall.')
+param badActorStorageFqdn string
+@description('This is a temporary hack to prevent deployment errors on redeployment.')
+param redeploy bool
+
 
 @allowed([ 'Premium', 'Standard' ])
 param firewallTier string = 'Standard'
-param workspaceId string
-
-@description('This is a temporary hack to prevent deployment errors on redeployment.')
-param redeploy bool = true
-
 var vmName = [for index in range(0, 2): 'vm${index}${index == 0 ? '-svc-ep' : '-non-svc-ep'}']
-var firewallName = 'defw-${uniqueString(resourceGroup().name)}'
-var firewallPipName = 'defw-pip-${uniqueString(resourceGroup().name)}'
-var firewallPolicyName = 'defwp-${uniqueString(resourceGroup().name)}'
+var firewallName = 'defw-${uniqueString(resourceGroup().id)}'
+var firewallPipName = 'defw-pip-${uniqueString(resourceGroup().id)}'
+var firewallPolicyName = 'defwp-${uniqueString(resourceGroup().id)}'
 var vnetAddressPrefix = '172.16.0.0/16'
 
 var seSubnetAddressPrefix = '172.16.0.0/24'
@@ -31,13 +32,13 @@ var bastionSubnetName = 'AzureBastionSubnet'
 var fwSubnetAddressPrefix = '172.16.255.0/24'
 var fwSubnetName = 'AzureFirewallSubnet'
 
-var routeTableName = 'rt-${uniqueString(resourceGroup().name)}'
-var bastionName = 'bstn-${uniqueString(resourceGroup().name)}'
-var bastionPipName = 'bstn-pip-${uniqueString(resourceGroup().name)}'
+var routeTableName = 'rt-${uniqueString(resourceGroup().id)}'
+var bastionName = 'bstn-${uniqueString(resourceGroup().id)}'
+var bastionPipName = 'bstn-pip-${uniqueString(resourceGroup().id)}'
 
-var seStorageName = 'sestg${uniqueString(resourceGroup().name)}'
+var seStorageName = 'sestg${uniqueString(resourceGroup().id)}'
 
-var peStorageName = 'pestg${uniqueString(resourceGroup().name)}'
+var peStorageName = 'pestg${uniqueString(resourceGroup().id)}'
 
 var privateEndpointName = '${peStorageName}-pvtep'
 var dnsZoneName = 'privatelink.blob.${environment().suffixes.storage}'
@@ -401,7 +402,7 @@ resource policyApplicationRuleGroup 'Microsoft.Network/firewallPolicies/ruleColl
         action: {
           type: 'Allow'
         }
-        name: 'RuleCollection'
+        name: 'AllowRuleCollection'
         priority: 200
         rules: [
           {
@@ -477,6 +478,40 @@ resource policyApplicationRuleGroup 'Microsoft.Network/firewallPolicies/ruleColl
             sourceAddresses: [
               nonSeSubnetAddressPrefix
               seSubnetAddressPrefix
+            ]
+          }
+        ]
+      }
+      {
+        ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
+        action: {
+          type: 'Deny'
+        }
+        name: 'BlockRuleCollection'
+        priority: 210
+        rules: [
+          {
+            ruleType: 'ApplicationRule'
+            name: 'Block-Bad-Actor-Storage'
+            protocols: [
+              {
+                protocolType: 'Https'
+                port: 433
+              }
+              {
+                protocolType: 'Http'
+                port: 80
+              }
+            ]
+            fqdnTags: []
+            webCategories: []
+            targetFqdns: [
+              badActorStorageFqdn
+            ]
+            targetUrls: []
+            terminateTLS: false
+            sourceAddresses: [
+              '*'
             ]
           }
         ]
